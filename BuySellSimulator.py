@@ -1,11 +1,12 @@
+import os
+import random
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import poisson
 import seaborn as sns
-import random
-from IPython.display import clear_output
-import os
+
 from multiprocessing import Pool
+from scipy.stats import poisson
+
 
 def main():
     
@@ -17,12 +18,12 @@ def main():
     # Set parameters for Weibull function to illustrate falloff with increased fees.
     # We'll use two sets: one for "retention" (i.e., how many transactions does an individual make) and "P(transact)", how likely an inidvidual is to make a given transaction
     # Here is the retention parameterization
-    BUYER_RETAIN = (1.5, 7, 10) # (shape, scale, max)
-    SELLER_RETAIN = (5, 7, 10) # (shape, scale, max)
+    BUYER_RETAIN = (1.5, 7, (0,10)) # (shape, scale, max)
+    SELLER_RETAIN = (5, 7, (0,10)) # (shape, scale, max)
     
     # For simplicity on this pass, assume same shape for P(buy)
-    BUYER_PBUY = (1.5, 7, 1)
-    SELLER_PBUY = (5, 7, 1)
+    BUYER_PBUY = (5, 10, (.5, 1))
+    SELLER_PBUY = (3, 10, (.25, 1))
     
     # Set range of fee levels
     FEE_LEVELS_B = np.arange(0,10,.2)
@@ -58,20 +59,23 @@ def main():
         total_fees = [[] for i in range(len(FEE_LEVELS_B))]
         for ib, vb in enumerate(FEE_LEVELS_B):
             for ii, vs in enumerate(FEE_LEVELS_S):
-                clear_output(wait=True)
                 if ii % 5 == 0:
                     print('Currently working on buyer fee {} ({} of {}), seller fee {} ({} of {})'.format(vb, ib, len(FEE_LEVELS_B), vs, ii, len(FEE_LEVELS_S)))
                 
                 fees_collect = GetFees(FEE_LEVELS_B[ib], FEE_LEVELS_S[ii], N_TRANSACT, N_BUYERS, N_SELLERS)    
                 total_fees[ib].append(fees_collect/N_TRANSACT)
-            
+    
+    # Plot retention and P(transact) as a function of fee level
+    fig, axs = plt.subplots(2,1)
+    axs[0].plot(FEE_LEVELS_B, GetFalloff(FEE_LEVELS_B, BUYER_RETAIN))
+    axs[0].plot(FEE_LEVELS_S, GetFalloff(FEE_LEVELS_S, SELLER_RETAIN))
             
     # Plot a heatmap of the fees collected    
     plt.figure()
     sns.heatmap(total_fees, \
                 yticklabels=['%.2f' % FEE_LEVELS_B[i] if FEE_LEVELS_B[i] % 1 == 0 else '' for i in range(len(FEE_LEVELS_B))], \
                     xticklabels=['%.2f' % FEE_LEVELS_S[i] if FEE_LEVELS_S[i] % 1 == 0 else '' for i in range(len(FEE_LEVELS_S))], \
-                        cbar_kws={'label': 'Expected revenue per buyer/seller pair'})
+                        cbar_kws={'label': 'Expected revenue per transaction'})
     plt.xlabel('Seller Fee')
     plt.ylabel('Buyer Fee')
     plt.show()
@@ -82,8 +86,8 @@ def GetFees(buyer_fee, seller_fee, n_transact, n_buyers, n_sellers):
     
     
     # Get a list of buyers and the number of transactions they will make
-    buyer_list = [NumberFromMean(GetFalloff(buyer_fee, BUYER_RETAIN[0], BUYER_RETAIN[1], (0, BUYER_RETAIN[2]))) for i in range(n_buyers)]
-    seller_list = [NumberFromMean(GetFalloff(seller_fee, SELLER_RETAIN[0], SELLER_RETAIN[1], (0, SELLER_RETAIN[2]))) for i in range(n_sellers)]
+    buyer_list = [NumberFromMean(GetFalloff(buyer_fee, BUYER_RETAIN)) for i in range(n_buyers)]
+    seller_list = [NumberFromMean(GetFalloff(seller_fee, SELLER_RETAIN)) for i in range(n_sellers)]
     
     # Start the transaction loop
     fees_collect = 0
@@ -102,8 +106,8 @@ def GetFees(buyer_fee, seller_fee, n_transact, n_buyers, n_sellers):
         seller_ind = pos_inds_s[random.randint(0,len(pos_inds_s)-1)]
         
         # Now check whether the buyer/seller "want to" make the transaction given the PBUY Weibull
-        buyer_ok = np.random.binomial(n=1,p=GetFalloff(buyer_fee, BUYER_PBUY[0], BUYER_PBUY[1], (0, BUYER_PBUY[2])))==1
-        seller_ok = np.random.binomial(n=1,p=GetFalloff(seller_fee, SELLER_PBUY[0], SELLER_PBUY[1], (0, SELLER_PBUY[2])))==1
+        buyer_ok = np.random.binomial(n=1,p=GetFalloff(buyer_fee, BUYER_PBUY))==1
+        seller_ok = np.random.binomial(n=1,p=GetFalloff(seller_fee, SELLER_PBUY))==1
         
         # If both do want to transact, collect fees and subtract 
         if buyer_ok and seller_ok:
@@ -116,7 +120,10 @@ def GetFees(buyer_fee, seller_fee, n_transact, n_buyers, n_sellers):
     return fees_collect
 
 
-def GetFalloff(vals, shape, scale, quant_range=(0,1)):
+def GetFalloff(vals, w_params=(1,1,(0,1))):
+    # Unpack w_params
+    shape, scale, quant_range = w_params
+    
     # Define the weibull    
     weib_fun = lambda x, k, l: 1 - np.exp(-1*((x/l)**k))
     weib_vals = weib_fun(vals, shape, scale)
@@ -151,28 +158,6 @@ def GetSales(poiss_mean, this_fee):
     return ev_sales
 
         
-def GetSparkContext(core_prop = 1):
-    import pyspark as ps
-    import os
-    
-    # Get number of cores
-    try:
-        n_cores = len(os.sched_getaffinity(0))
-    except:
-        import psutil
-        n_cores = psutil.cpu_count()
-        
-    n_str = 'local[' + str(int(n_cores*core_prop)) + ']'
-    
-    spark = ps.sql.SparkSession.builder \
-    .master(n_str) \
-        .appName('spark-ml') \
-            .getOrCreate()
-    sc = spark.sparkContext
-
-    return sc
-
-
 def PoolHelper(in_list):
     B_FEE, N_TRANSACT, N_BUYERS, N_SELLERS, FEE_LEVELS_S = in_list
     these_fees = []
